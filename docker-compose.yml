@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # ================= 1. 数据存储层 =================
+  postgres:
+    # 推荐使用带有 pgvector 扩展的镜像，完美替代轻量级向量库需求
+    image: pgvector/pgvector:pg15
+    container_name: transformer_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+      POSTGRES_DB: transformer_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:6-alpine
+    container_name: transformer_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  minio:
+    image: elestio/minio:latest
+    container_name: transformer_minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # API 端口
+      - "9001:9001"   # 控制台 Web UI 端口
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+  # ================= 2. 后端逻辑与异步任务层 =================
+  backend:
+    build:
+      context: ./transformer-agent-backend
+      dockerfile: Dockerfile
+    container_name: transformer_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    environment:
+      - DATABASE_URL=postgresql://admin:adminpassword@postgres:5432/transformer_db
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - DEEPSEEK_API_KEY=your_api_key_here  # 替换为实际的 API Key
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build:
+      context: ./transformer-agent-backend
+      dockerfile: Dockerfile
+    container_name: transformer_celery_worker
+    restart: always
+    depends_on:
+      - backend
+      - redis
+      - postgres
+    environment:
+      - DATABASE_URL=postgresql://admin:adminpassword@postgres:5432/transformer_db
+      - REDIS_URL=redis://redis:6379/0
+      - DEEPSEEK_API_KEY=your_api_key_here
+    # 启动 Celery 消费者，处理 PDF 耗时解析与大模型调用
+    command: celery -A app.worker.celery_app worker --loglevel=info
+
+  # ================= 3. 前端表现层 =================
+  frontend:
+    build:
+      context: ./transformer-agent-frontend
+      dockerfile: Dockerfile
+    container_name: transformer_frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:

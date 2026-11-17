@@ -1,0 +1,34 @@
+# ============================================================
+# 前端 Docker 构建忽略清单 (加速 docker compose up -d --build)
+# 位于 transformer-agent-frontend/，作用于该目录的构建上下文
+# ============================================================
+
+# --- 依赖与构建产物（镜像内由 npm install / npm run build 重新生成）---
+node_modules/
+dist/
+
+# --- 缓存 ---
+.vite/
+cache/
+*.log
+npm-debug.log*
+
+# --- 开发工具目录 ---
+.idea/
+.vscode/
+*.swp
+
+# --- Docker 自身 ---
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# --- Git ---
+.git/
+.gitignore
+.gitattributes
+
+# --- 环境变量（VITE_ 开头变量在构建时注入，正式密钥严禁打入镜像）---
+.env
+.env.*
+.env.local

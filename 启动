@@ -1,0 +1,14 @@
+日常开发采用“中间件容器化 + 前后端本地直跑”
+在日常开发调试阶段，将 PaddleOCR 和 LangGraph 塞进 Docker 容器里构建是最耗时且不方便 PyCharm 断点调试的做法。最快的开发模式是只用 Docker 启动数据库和中间件（仅需 5 秒）：
+
+用 Docker 只启动基础组件（无需任何 build）
+docker-compose up -d postgres redis minio
+
+后端直接在本地 PyCharm 虚拟环境中运行（秒级启动，支持随时打断点）：
+cd transformer-agent-backend
+uvicorn app.main:app --reload --port 8000
+
+前端直接在本地终端运行（毫秒级热更新）：
+
+cd transformer-agent-frontend
+npm run dev

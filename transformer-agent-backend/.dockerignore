@@ -1,0 +1,45 @@
+# ============================================================
+# 后端 Docker 构建忽略清单 (加速 docker compose up -d --build)
+# 位于 transformer-agent-backend/，作用于该目录的构建上下文
+# ============================================================
+
+# --- Python 运行环境与缓存 ---
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+pip-log.txt
+
+# --- 虚拟环境之外的开发工具目录 ---
+.idea/
+.vscode/
+*.swp
+
+# --- Docker 自身（防止 COPY 语义混乱）---
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# --- 数据与日志（volume 挂载，无需打入镜像）---
+data/
+logs/
+*.log
+
+# --- Git ---
+.git/
+.gitignore
+.gitattributes
+
+# --- 测试（生产镜像不需要）---
+tests/
+
+# --- 环境变量文件（严禁打入镜像，避免泄漏密钥）---
+.env
+.env.*

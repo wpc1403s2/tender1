@@ -1,0 +1,43 @@
+# FastAPI 核心框架
+fastapi==0.163.1
+uvicorn[standard]>=0.34.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+python-multipart>=0.0.12
+
+# 异步任务与队列
+celery>=5.4.0
+redis>=5.2.0
+
+# Agent 与大模型交互 (2026年末最新版)
+langchain>=0.3.0
+langchain-core>=0.3.15
+langgraph==1.2.21
+openai==3.51.0
+
+# 文档解析与处理
+PyMuPDF>=1.25.0
+paddlepaddle>=2.6.2
+paddleocr>=2.7.5
+python-docx>=1.1.2
+opencv-python-headless>=4.10.0
+numpy>=1.26.0
+tabulate>=0.9.0
+
+# 向量数据库与检索
+pymilvus>=2.4.0
+sentence-transformers>=3.1.0
+
+# 关系型数据库与ORM
+SQLAlchemy>=2.0.35
+asyncpg>=0.30.0
+alembic>=1.14.0
+
+# Excel 与文件操作
+openpyxl>=3.1.5
+pandas>=2.2.3
+
+# 其他实用工具
+python-dotenv>=1.0.1
+httpx>=0.28.0
+loguru>=0.7.3
