@@ -13,7 +13,11 @@ from typing import List, Dict, Optional, Tuple
 from app.schemas.document_schema import (
     DocCategory, ContentBlock, ParsedDocument, ProjectMemoryStore
 )
+# 在 app/services/parser_service.py 顶部新增导入与目录常量：
+from pathlib import Path
 
+UPLOAD_ROOT_DIR = Path("data/uploads")
+UPLOAD_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 # 延迟加载或全局单例初始化 PaddleOCR PP-Structure (避免每次请求重复加载模型)
 try:
     from paddleocr import PPStructure
@@ -59,31 +63,39 @@ class DocumentParserService:
         return DocCategory.UNKNOWN
 
     @classmethod
+    def get_uploaded_file_path(cls, project_id: str, file_name: str) -> Path:
+        """获取某项目下已上传原始文件的本地存储路径"""
+        return UPLOAD_ROOT_DIR / project_id / file_name
+
+    @classmethod
     async def process_upload_Batch(cls, project_id: str, files_data: List[Tuple[str, bytes]]) -> ProjectMemoryStore:
-        """
-        异步处理上传的文件列表（支持单文件或 ZIP 包自动解压）
-        :param project_id: 项目ID
-        :param files_data: [(filename, file_bytes), ...]
-        """
         if project_id not in cls._memory_store:
             cls._memory_store[project_id] = ProjectMemoryStore(project_id=project_id)
 
+        # 创建当前项目的专属文件存放目录
+        project_dir = UPLOAD_ROOT_DIR / project_id
+        project_dir.mkdir(parents=True, exist_ok=True)
+
         expanded_files: List[Tuple[str, bytes]] = []
 
-        # 1. 自动拆解 ZIP 包
+        # 1. 自动拆解 ZIP 包或单文件
         for filename, file_bytes in files_data:
             if filename.lower().endswith('.zip'):
                 with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
                     for member in zf.infolist():
                         if not member.is_dir() and not member.filename.startswith('__MACOSX'):
-                            # 处理中文文件名乱码问题
                             real_name = os.path.basename(member.filename)
                             if real_name:
-                                expanded_files.append((real_name, zf.read(member)))
+                                raw_bytes = zf.read(member)
+                                expanded_files.append((real_name, raw_bytes))
+                                # 保存解压后的原文件到磁盘
+                                (project_dir / real_name).write_bytes(raw_bytes)
             else:
                 expanded_files.append((filename, file_bytes))
+                # 保存上传的原文件到磁盘
+                (project_dir / filename).write_bytes(file_bytes)
 
-        # 2. 并发执行文档解析 (使用 asyncio.to_thread 避免 CPU 密集型解析阻塞 FastAPI 主循环)
+        # 2. 并发执行文档解析
         tasks = [
             asyncio.to_thread(cls._parse_single_file, fname, fbytes)
             for fname, fbytes in expanded_files
@@ -93,7 +105,7 @@ class DocumentParserService:
         # 3. 存入内存上下文
         for doc in parsed_docs:
             cls._memory_store[project_id].documents[doc.doc_id] = doc
-            logger.info(f"文档 [{doc.file_name}] 解析完成 | 类型: {doc.category.value} | 块数: {len(doc.blocks)}")
+            logger.info(f"文档 [{doc.file_name}] 已保存并解析完成 | 页数: {doc.total_pages}")
 
         return cls._memory_store[project_id]
 

@@ -1,10 +1,17 @@
 <template>
   <div class="review-workspace">
-    <!-- 顶部项目导航栏 -->
     <header class="workspace-header">
       <div class="left-title">
         <el-tag effect="dark" type="primary">项目审阅台</el-tag>
         <h2>{{ reviewData.project_name }}</h2>
+        <el-select v-model="currentPdfFile" size="small" style="width: 320px; margin-left: 16px">
+          <el-option
+            v-for="doc in reviewData.documents"
+            :key="doc.doc_id"
+            :label="doc.file_name"
+            :value="doc.file_name"
+          />
+        </el-select>
       </div>
       <div class="right-actions">
         <el-button type="success" :icon="Download" @click="handleExportExcel">
@@ -13,16 +20,31 @@
       </div>
     </header>
 
-    <!-- 全宽主体区域（已移除左侧 PDF 面板） -->
-    <main class="full-container">
-      <section class="form-pane">
-        <el-tabs v-model="activeTab" type="border-card" class="review-tabs">
+    <main class="split-container">
+      <!-- 左侧：PDF.js 原文渲染与 BBox 溯源高亮 -->
+      <section class="left-pdf-pane">
+        <PdfViewer :pdf-url="currentPdfUrl" :file-name="currentPdfFile" />
+      </section>
 
-          <!-- Tab 1: 商务与变压器主参数（对应二期提示词字段） -->
+      <!-- 右侧：结构化提取表单与 RAG 组部件匹配面板 -->
+      <section class="right-form-pane">
+        <el-tabs v-model="activeTab" type="border-card" class="review-tabs">
           <el-tab-pane label="1. 变压器主参数与商务要求" name="mainParams">
-            <el-table :data="reviewData.main_parameters" border stripe>
-              <el-table-column prop="param_key" label="二期标准字段" width="260" />
-              <el-table-column label="Agent 提取值 (可直接修改)" min-width="220">
+            <el-alert
+              title="点击任意参数行，左侧 PDF 将自动翻页并高亮原文提取位置（BBox 溯源）"
+              type="info"
+              show-icon
+              :closable="false"
+              style="margin-bottom: 12px"
+            />
+            <el-table
+              :data="reviewData.main_parameters"
+              border
+              highlight-current-row
+              @row-click="handleMainParamClick"
+            >
+              <el-table-column prop="param_key" label="二期标准字段" width="230" />
+              <el-table-column label="Agent 提取值 (可直接修改)" min-width="180">
                 <template #default="{ row }">
                   <div class="editable-cell">
                     <el-input v-model="row.param_value" size="small" />
@@ -32,21 +54,22 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column prop="original_text" label="原文依据片段" min-width="280" show-overflow-tooltip />
-              <el-table-column label="来源文件与页码" width="280">
+              <el-table-column prop="original_text" label="原文依据片段" min-width="220" show-overflow-tooltip />
+              <el-table-column label="页码" width="70" align="center">
                 <template #default="{ row }">
-                  <span>{{ row.source_ref?.file_name }} (P.{{ row.source_ref?.page_number }})</span>
+                  <el-tag size="small">P.{{ row.source_ref.page_number }}</el-tag>
                 </template>
               </el-table-column>
             </el-table>
           </el-tab-pane>
 
-          <!-- Tab 2: 组部件需求提取与内部规范库匹配 -->
           <el-tab-pane label="2. 组部件智能匹配推荐 (RAG)" name="components">
             <div
               v-for="comp in reviewData.components"
               :key="comp.req_id"
               class="component-card"
+              :class="{ 'is-active': activeReqId === comp.req_id }"
+              @click="handleComponentClick(comp)"
             >
               <div class="comp-card-header">
                 <div>
@@ -55,20 +78,14 @@
                   <span class="comp-qty">需求数量: {{ comp.Quantity }}</span>
                 </div>
                 <el-tag size="small" type="info">
-                  来源: {{ comp.Source_Reference.file_name }} (第 {{ comp.Source_Reference.page_number }} 页)
+                  溯源: {{ comp.Source_Reference.file_name }} (第 {{ comp.Source_Reference.page_number }} 页)
                 </el-tag>
               </div>
 
-              <!-- 标书提取出的组部件技术要求 -->
               <div class="comp-requirements">
                 <p><strong>材质要求：</strong>{{ comp.Material_Requirement || '未明确指定' }}</p>
                 <div class="tech-tags">
-                  <el-tag
-                    v-for="(val, key) in comp.Technical_Parameters"
-                    :key="key"
-                    size="small"
-                    effect="plain"
-                  >
+                  <el-tag v-for="(val, key) in comp.Technical_Parameters" :key="key" size="small" effect="plain">
                     {{ key }}: {{ val }}
                   </el-tag>
                 </div>
@@ -77,10 +94,9 @@
                 </ul>
               </div>
 
-              <!-- 双路召回（硬规则过滤 + 向量语义检索）的多供应商候选列表 -->
               <div class="matching-section">
                 <div class="matching-title">
-                  <span>内部标准规范库匹配推荐（共召回 {{ comp.matched_candidates.length }} 款合规组件，全量展示）：</span>
+                  <span>内部标准规范库匹配推荐（共召回 {{ comp.matched_candidates.length }} 款合规组件）：</span>
                 </div>
                 <el-radio-group v-model="comp.selected_comp_id" class="candidate-group">
                   <el-radio
@@ -101,7 +117,6 @@
               </div>
             </div>
           </el-tab-pane>
-
         </el-tabs>
       </section>
     </main>
@@ -109,147 +124,93 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { Download } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import {ElLoading, ElMessage} from 'element-plus';
+import PdfViewer from '../../components/pdf/PdfViewer.vue';
+import { useTenderStore } from '../../store/tenderStore';
 import { tenderApi } from '../../api/tender';
-import type { TenderReviewData } from '../../types/tender';
+import type { TenderReviewData, MainParameterItem, ExtractedComponentItem } from '../../types/tender';
 
 const route = useRoute();
+const tenderStore = useTenderStore();
 const activeTab = ref('mainParams');
+const activeReqId = ref('');
+const currentPdfFile = ref('680500BEST00025_CDFE00_60 Power transformer general specification.pdf');
 
-// 预置演示数据（已去除 bbox 坐标依赖）
+// 修改后的 reviewData 初始状态（清空硬编码假数据，等待后端动态加载）
 const reviewData = reactive<TenderReviewData>({
-  project_id: (route.params.projectId as string) || 'proj_guillena_001',
-  project_name: 'SPAIN - GUILLENA PV PLANT (30/220 kV Step-Up Transformer)',
-  status: 'MATCHED',
-  documents: [],
-  main_parameters: [
-    {
-      param_key: '1.1 变压器的相数',
-      param_value: '3',
-      original_text: 'Number of phases: 3',
-      source_ref: {
-        file_name: '680502BEGA00026_CDFE00_06 General TDS.pdf',
-        page_number: 4,
-        bbox: null,
-      },
-    },
-    {
-      param_key: '1.2 变压器的频率',
-      param_value: '50 Hz',
-      original_text: 'Rated frequency: 50 Hz',
-      source_ref: {
-        file_name: '680502BEGA00026_CDFE00_06 General TDS.pdf',
-        page_number: 4,
-        bbox: null,
-      },
-    },
-    {
-      param_key: '最高温度(℃)',
-      param_value: '50 °C (TDS参数表为48 °C)',
-      original_text: 'Temperature: 0°C to 50°C',
-      has_conflict: true,
-      source_ref: {
-        file_name: '680500BEST00025_CDFE00_60 Power transformer general specification.pdf',
-        page_number: 13,
-        bbox: null,
-      },
-    },
-    {
-      param_key: '联结组别',
-      param_value: 'YNd11',
-      original_text: 'Connection and phase displacement symbol (vector group): YNd11',
-      source_ref: {
-        file_name: '680502BEGA00026_CDFE00_06 General TDS.pdf',
-        page_number: 4,
-        bbox: null,
-      },
-    },
-    {
-      param_key: '冷却方式',
-      param_value: 'ONAN/ONAF',
-      original_text: 'Type of cooling: ONAN/ONAF',
-      source_ref: {
-        file_name: '680502BEGA00026_CDFE00_06 General TDS.pdf',
-        page_number: 5,
-        bbox: null,
-      },
-    },
-  ],
-  components: [
-    {
-      req_id: 'req_arrester_01',
-      Component_Category: 'Surge_Arrester (避雷器)',
-      Component_Name: 'HV Station Class Surge Arrester',
-      Material_Requirement: 'Silicone rubber / Porcelain housing, pollution level IV (Very Heavy)',
-      Technical_Parameters: {
-        highest_voltage: '245 kV (System 220kV)',
-        arrester_class: 'Station class',
-        impulse_withstand: '1050 kV',
-      },
-      Specific_Requirements: [
-        'Surge arrester requirement: Yes, Station class',
-        'Pollution level shall be IV - Very Heavy (requires high creepage distance)',
-      ],
-      Quantity: '3 sets',
-      Source_Reference: {
-        file_name: '680502BEGA00026_CDFE00_06 General TDS.pdf',
-        page_number: 6,
-        bbox: null,
-      },
-      matched_candidates: [
-        {
-          comp_id: 'siemens_3el2_192',
-          manufacturer: 'Siemens',
-          model_series: '3EL2 192-2PJ31 (Silicone Cage Design, Ur=192kV, LD Class 3)',
-          similarity_score: 0.95,
-          specs_summary: { Us: '245kV', In: '10kA', housing: 'Silicone rubber' },
-        },
-        {
-          comp_id: 'siemens_3ep6_192',
-          manufacturer: 'Siemens',
-          model_series: '3EP6 192-2PF31 (Porcelain Housing, Ur=192kV, LD Class 3)',
-          similarity_score: 0.91,
-          specs_summary: { Us: '245kV', In: '10kA', housing: 'Porcelain' },
-        },
-      ],
-      selected_comp_id: 'siemens_3el2_192',
-    },
-    {
-      req_id: 'req_buchholz_02',
-      Component_Category: 'Buchholz_Relay (瓦斯继电器)',
-      Component_Name: 'Buchholz gas relay',
-      Material_Requirement: 'Corrosion resistant, anti-seismic',
-      Technical_Parameters: {
-        alarm_contacts: '1 alarm contact',
-        trip_contacts: '2 trip contacts',
-        pipe_diameter: 'DN80',
-      },
-      Specific_Requirements: [
-        'Provided with two electrically independent alarm and trip contacts',
-        'Fitted between two on-off butterfly valves and with a bypass valve',
-      ],
-      Quantity: '2 sets (Tank + OLTC)',
-      Source_Reference: {
-        file_name: '680500BEST00025_CDFE00_60 Power transformer general specification.pdf',
-        page_number: 28,
-        bbox: null,
-      },
-      matched_candidates: [
-        {
-          comp_id: 'emb_double_dn80',
-          manufacturer: 'EMB GmbH',
-          model_series: 'Double-float Buchholz Relay DN80 (Code 17A / Harting Connector)',
-          similarity_score: 0.96,
-          specs_summary: { DN: '80mm', float: 'Double-float', voltage: 'AC/DC 5-250V' },
-        },
-      ],
-      selected_comp_id: 'emb_double_dn80',
-    },
-  ],
+  project_id: (route.params.projectId as string) || '',
+  project_name: '正在加载标书数据...',
+  status: 'PARSING',
+  documents: [],          // 初始化为空数组，由后端动态填充
+  main_parameters: [],    // 初始化为空数组，由 Agent 提取结果填充
+  components: [],         // 初始化为空数组，由 RAG 匹配结果填充
 });
+
+// 替换 Review.vue 中的 currentPdfUrl 计算属性：
+const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+const currentPdfUrl = computed(() => {
+  if (!currentPdfFile.value) return '';
+  const doc = reviewData.documents.find((d) => d.file_name === currentPdfFile.value);
+
+  // 1. 优先使用后端返回的真实文件流地址
+  if (doc?.file_url) {
+    return doc.file_url.startsWith('http') ? doc.file_url : `${baseUrl}${doc.file_url}`;
+  }
+
+  // 2. 如果切换到了某行参数引用的文件名，直接按后端流式接口规则拼接 URL
+  if (reviewData.project_id && !reviewData.project_id.startsWith('proj_guillena')) {
+    return `${baseUrl}/api/v1/tender/${reviewData.project_id}/files/${encodeURIComponent(currentPdfFile.value)}`;
+  }
+
+  // 3. 仅在未上传任何文件的纯前端离线演示模式下，才回退到 public/sample.pdf
+  return '/sample.pdf';
+});
+
+// 替换 Review.vue 中的 onMounted 钩子，自动选中第一个上传的真实 PDF：
+onMounted(async () => {
+  const loadingInstance = ElLoading.service({
+    lock: true,
+    text: '正在加载多智能体解析与组部件匹配结果...',
+    background: 'rgba(0, 0, 0, 0.7)',
+  });
+  const pid = route.params.projectId as string;
+  if (pid) {
+    try {
+      const serverData = await tenderApi.getReviewData(pid);
+      Object.assign(reviewData, serverData);
+      // 默认选中用户上传的第一个 PDF 文件进行渲染
+      const firstPdf = reviewData.documents.find((d) => d.file_name.toLowerCase().endsWith('.pdf'));
+      if (firstPdf) {
+        currentPdfFile.value = firstPdf.file_name;
+      } else if (reviewData.documents.length > 0) {
+        currentPdfFile.value = reviewData.documents[0].file_name;
+      }
+    } catch (err) {
+      console.warn('未获取到后端项目数据，使用本地演示数据:', err);
+    }finally {
+      loadingInstance.close();
+    }
+  }
+
+
+
+
+});
+
+function handleMainParamClick(row: MainParameterItem) {
+  currentPdfFile.value = row.source_ref.file_name;
+  tenderStore.triggerTraceHighlight(row.source_ref);
+}
+
+function handleComponentClick(comp: ExtractedComponentItem) {
+  activeReqId.value = comp.req_id;
+  currentPdfFile.value = comp.Source_Reference.file_name;
+  tenderStore.triggerTraceHighlight(comp.Source_Reference);
+}
 
 async function handleExportExcel() {
   try {
@@ -266,118 +227,41 @@ onMounted(async () => {
       const serverData = await tenderApi.getReviewData(route.params.projectId as string);
       Object.assign(reviewData, serverData);
     } catch {
-      // 后端未连接时使用本地演示数据
+      // 保持本地演示数据
     }
   }
 });
 </script>
 
 <style scoped lang="scss">
-.review-workspace {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  background: #f5f7fa;
-}
-
+.review-workspace { display: flex; flex-direction: column; height: 100vh; background: #f5f7fa; }
 .workspace-header {
-  height: 58px;
-  background: #fff;
-  border-bottom: 1px solid #dcdfe6;
-  padding: 0 24px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-
-  .left-title {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    h2 { margin: 0; font-size: 16px; color: #303133; }
-  }
+  height: 58px; background: #fff; border-bottom: 1px solid #dcdfe6; padding: 0 20px;
+  display: flex; justify-content: space-between; align-items: center;
+  .left-title { display: flex; align-items: center; gap: 12px; h2 { margin: 0; font-size: 16px; color: #303133; } }
 }
-
-.full-container {
-  flex: 1;
-  overflow: hidden;
-  padding: 16px 24px;
-  max-width: 1440px;
-  width: 100%;
-  margin: 0 auto;
-  box-sizing: border-box;
-
-  .form-pane {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-
+.split-container {
+  flex: 1; display: flex; overflow: hidden; padding: 12px; gap: 12px;
+  .left-pdf-pane { width: 48%; height: 100%; }
+  .right-form-pane {
+    width: 52%; height: 100%; display: flex; flex-direction: column;
     .review-tabs {
-      height: 100%;
-      display: flex;
-      flex-direction: column;
-      :deep(.el-tabs__content) {
-        flex: 1;
-        overflow-y: auto;
-      }
+      height: 100%; display: flex; flex-direction: column;
+      :deep(.el-tabs__content) { flex: 1; overflow-y: auto; }
     }
   }
 }
-
-.editable-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
+.editable-cell { display: flex; align-items: center; gap: 8px; }
 .component-card {
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
-  padding: 16px;
-  margin-bottom: 14px;
-  background: #fff;
-
-  .comp-card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 10px;
-    .comp-title { margin-left: 10px; font-size: 15px; }
-    .comp-qty { margin-left: 12px; font-size: 13px; color: #606266; }
-  }
-
-  .comp-requirements {
-    font-size: 13px;
-    color: #606266;
-    background: #fafafa;
-    padding: 10px;
-    border-radius: 4px;
-    .tech-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
-    .spec-req-list { margin: 4px 0 0 18px; padding: 0; }
-  }
-
+  border: 1px solid #e4e7ed; border-radius: 6px; padding: 14px; margin-bottom: 14px;
+  background: #fff; cursor: pointer; transition: all 0.2s;
+  &:hover, &.is-active { border-color: #409eff; box-shadow: 0 2px 12px rgba(64, 158, 255, 0.15); }
+  .comp-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; .comp-title { margin-left: 10px; font-size: 15px; } .comp-qty { margin-left: 12px; font-size: 13px; color: #606266; } }
+  .comp-requirements { font-size: 13px; color: #606266; background: #fafafa; padding: 10px; border-radius: 4px; .tech-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; } .spec-req-list { margin: 4px 0 0 18px; padding: 0; } }
   .matching-section {
-    margin-top: 12px;
-    .matching-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #303133; }
-    .candidate-group {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      align-items: stretch;
-    }
-    .candidate-radio {
-      margin-right: 0;
-      width: 100%;
-      height: auto;
-      padding: 8px 12px;
-      .cand-info {
-        display: inline-flex;
-        justify-content: space-between;
-        align-items: center;
-        width: 100%;
-        gap: 12px;
-      }
-    }
+    margin-top: 12px; .matching-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #303133; }
+    .candidate-group { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+    .candidate-radio { margin-right: 0; width: 100%; height: auto; padding: 8px 12px; .cand-info { display: inline-flex; justify-content: space-between; align-items: center; width: 100%; gap: 12px; } }
   }
 }
 </style>
