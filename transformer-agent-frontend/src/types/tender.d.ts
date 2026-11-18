@@ -52,14 +52,19 @@ export interface MainParameterItem {
   param_value: string;      // 提取值，如: "50Hz", "45"
   original_text: string;    // 原文描述
   has_conflict?: boolean;
-  source_ref: SourceReference;
+  source_ref: SourceReference | null;
+  source_refs?: SourceReference[];
+  evidence_warning?: string;
 }
 
 // 整个标书项目的审阅状态数据
 export interface TenderReviewData {
   project_id: string;
   project_name: string;
-  status: 'PARSING' | 'EXTRACTING' | 'MATCHED' | 'COMPLETED';
+  status: 'PARSING' | 'READY' | 'EXTRACTING' | 'EXTRACTED' | 'FAILED' | 'MATCHED' | 'COMPLETED';
+  extraction_error?: string | null;
+  completed_chunks?: number;
+  total_chunks?: number;
   documents: DocumentSummary[];
   main_parameters: MainParameterItem[];
   components: ExtractedComponentItem[];

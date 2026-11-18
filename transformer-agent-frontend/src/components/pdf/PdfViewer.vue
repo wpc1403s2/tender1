@@ -82,32 +82,50 @@ const canvasHeight = ref<number>(1050);
 const loadError = ref<string>('');
 
 const highlightStyle = computed(() => {
-  if (tenderStore.activePage !== currentPage.value || !tenderStore.activeBbox) {
+  if (tenderStore.activeFileName !== props.fileName || tenderStore.activePage !== currentPage.value || !tenderStore.activeBbox) {
     return null;
   }
   return convertPdfBboxToStyle(tenderStore.activeBbox, scale.value);
 });
 
+pdfDoc= null;
+let currentLoadingTask: any = null; // 新增：记录当前的加载任务
+currentRenderTask = null;
+
 async function loadPdfDocument(url: string) {
-  if (!url) return;
+  if (!url) {
+    loadError.value = '';
+    return;
+  }
   loadError.value = '';
+
   try {
-    const loadingTask = pdfjsLib.getDocument({
+    // 如果上一次 PDF 加载任务还在进行，先销毁它，防止旧的 404 异步回调覆盖当前成功状态
+    if (currentLoadingTask) {
+      await currentLoadingTask.destroy();
+      currentLoadingTask = null;
+    }
+
+    currentLoadingTask = pdfjsLib.getDocument({
       url,
-      // 支持标准字体渲染，防止部分特殊工业符号空白
       cMapUrl: 'https://unpkg.com/pdfjs-dist@3.11.174/cmaps/',
       cMapPacked: true,
     });
-    pdfDoc = await loadingTask.promise;
-    totalPages.value = pdfDoc.numPages;
 
-    // 同步当前激活页码（防止超出总页数）
+    pdfDoc = await currentLoadingTask.promise;
+    totalPages.value = pdfDoc.numPages;
+    loadError.value = ''; // 确保加载成功后清空任何历史错误提示
+
     const targetPage = Math.min(Math.max(1, tenderStore.activePage || 1), totalPages.value);
     currentPage.value = targetPage;
     await renderPage(targetPage);
   } catch (err: any) {
+    // 忽略被主动销毁的任务异常
+    if (err?.name === 'PasswordException' || err?.message?.includes('Worker was destroyed')) {
+      return;
+    }
     console.error('PDF 加载失败:', err);
-    loadError.value = `无法加载 PDF 文件 (${url})。请确认前端 public/ 目录下已放置对应的 PDF 文件，或后端文件流接口已启动。`;
+    loadError.value = `无法加载 PDF 文件 (${url})。请确认文件已上传或后端文件流接口正常。`;
   }
 }
 

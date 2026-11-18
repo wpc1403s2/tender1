@@ -14,6 +14,9 @@
         </el-select>
       </div>
       <div class="right-actions">
+        <el-button type="primary" :loading="isExtracting || isLoading" @click="startExtraction(true)">
+          {{ isExtracting ? '正在提取参数…' : '重新提取参数' }}
+        </el-button>
         <el-button type="success" :icon="Download" @click="handleExportExcel">
           确认审核并导出《投标初评表》Excel
         </el-button>
@@ -30,6 +33,8 @@
       <section class="right-form-pane">
         <el-tabs v-model="activeTab" type="border-card" class="review-tabs">
           <el-tab-pane label="1. 变压器主参数与商务要求" name="mainParams">
+            <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
+            <el-alert v-if="isExtracting" :title="`正在读取标书并提取参数，已完成 ${reviewData.completed_chunks || 0} / ${reviewData.total_chunks || 0} 批。可在左侧查看原文。`" type="info" :closable="false" />
             <el-alert
               title="点击任意参数行，左侧 PDF 将自动翻页并高亮原文提取位置（BBox 溯源）"
               type="info"
@@ -47,7 +52,8 @@
               <el-table-column label="Agent 提取值 (可直接修改)" min-width="180">
                 <template #default="{ row }">
                   <div class="editable-cell">
-                    <el-input v-model="row.param_value" size="small" />
+                    <el-input v-model="row.param_value" type="textarea" :autosize="{ minRows: 1, maxRows: 8 }" size="small" />
+                    <el-tag v-if="row.evidence_warning" type="warning" :title="row.evidence_warning" size="small">待核验</el-tag>
                     <el-tag v-if="row.has_conflict" type="danger" size="small" effect="dark">
                       跨文档冲突
                     </el-tag>
@@ -57,7 +63,12 @@
               <el-table-column prop="original_text" label="原文依据片段" min-width="220" show-overflow-tooltip />
               <el-table-column label="页码" width="70" align="center">
                 <template #default="{ row }">
-                  <el-tag size="small">P.{{ row.source_ref.page_number }}</el-tag>
+                  <template v-if="row.source_ref">
+                    <el-button v-for="(source, index) in (row.source_refs || [row.source_ref])" :key="index"
+                      link type="primary" :title="source.file_name + '\n' + source.original_text"
+                      @click.stop="traceSource(source)">P.{{ source.page_number }}</el-button>
+                  </template>
+                  <span v-else>—</span>
                 </template>
               </el-table-column>
             </el-table>
@@ -124,113 +135,119 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute } from 'vue-router';
 import { Download } from '@element-plus/icons-vue';
-import {ElLoading, ElMessage} from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import PdfViewer from '../../components/pdf/PdfViewer.vue';
 import { useTenderStore } from '../../store/tenderStore';
 import { tenderApi } from '../../api/tender';
-import type { TenderReviewData, MainParameterItem, ExtractedComponentItem } from '../../types/tender';
+import type { TenderReviewData, MainParameterItem, ExtractedComponentItem, SourceReference } from '../../types/tender';
 
 const route = useRoute();
 const tenderStore = useTenderStore();
 const activeTab = ref('mainParams');
 const activeReqId = ref('');
-const currentPdfFile = ref('680500BEST00025_CDFE00_60 Power transformer general specification.pdf');
-
-// 修改后的 reviewData 初始状态（清空硬编码假数据，等待后端动态加载）
+const currentPdfFile = ref('');
+const errorMessage = ref('');
+const isLoading = ref(false);
 const reviewData = reactive<TenderReviewData>({
   project_id: (route.params.projectId as string) || '',
-  project_name: '正在加载标书数据...',
-  status: 'PARSING',
-  documents: [],          // 初始化为空数组，由后端动态填充
-  main_parameters: [],    // 初始化为空数组，由 Agent 提取结果填充
-  components: [],         // 初始化为空数组，由 RAG 匹配结果填充
+  project_name: '正在加载标书数据...', status: 'PARSING',
+  documents: [], main_parameters: [], components: [],
 });
-
-// 替换 Review.vue 中的 currentPdfUrl 计算属性：
+const isExtracting = computed(() => reviewData.status === 'EXTRACTING');
 const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-
 const currentPdfUrl = computed(() => {
-  if (!currentPdfFile.value) return '';
-  const doc = reviewData.documents.find((d) => d.file_name === currentPdfFile.value);
-
-  // 1. 优先使用后端返回的真实文件流地址
-  if (doc?.file_url) {
-    return doc.file_url.startsWith('http') ? doc.file_url : `${baseUrl}${doc.file_url}`;
-  }
-
-  // 2. 如果切换到了某行参数引用的文件名，直接按后端流式接口规则拼接 URL
-  if (reviewData.project_id && !reviewData.project_id.startsWith('proj_guillena')) {
-    return `${baseUrl}/api/v1/tender/${reviewData.project_id}/files/${encodeURIComponent(currentPdfFile.value)}`;
-  }
-
-  // 3. 仅在未上传任何文件的纯前端离线演示模式下，才回退到 public/sample.pdf
-  return '/sample.pdf';
+  const doc = reviewData.documents.find(d => d.file_name === currentPdfFile.value);
+  if (!doc?.file_name.toLowerCase().endsWith('.pdf')) return '';
+  return doc.file_url?.startsWith('http') ? doc.file_url : `${baseUrl}${doc.file_url}`;
 });
-
-// 替换 Review.vue 中的 onMounted 钩子，自动选中第一个上传的真实 PDF：
-onMounted(async () => {
-  const loadingInstance = ElLoading.service({
-    lock: true,
-    text: '正在加载多智能体解析与组部件匹配结果...',
-    background: 'rgba(0, 0, 0, 0.7)',
-  });
-  const pid = route.params.projectId as string;
-  if (pid) {
-    try {
-      const serverData = await tenderApi.getReviewData(pid);
-      Object.assign(reviewData, serverData);
-      // 默认选中用户上传的第一个 PDF 文件进行渲染
-      const firstPdf = reviewData.documents.find((d) => d.file_name.toLowerCase().endsWith('.pdf'));
-      if (firstPdf) {
-        currentPdfFile.value = firstPdf.file_name;
-      } else if (reviewData.documents.length > 0) {
-        currentPdfFile.value = reviewData.documents[0].file_name;
-      }
-    } catch (err) {
-      console.warn('未获取到后端项目数据，使用本地演示数据:', err);
-    }finally {
-      loadingInstance.close();
-    }
-  }
-
-
-
-
-});
-
-function handleMainParamClick(row: MainParameterItem) {
-  currentPdfFile.value = row.source_ref.file_name;
-  tenderStore.triggerTraceHighlight(row.source_ref);
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let disposed = false;
+function errorText(err: any) {
+  return err?.response?.data?.detail || err?.message || '请求失败，请重试';
 }
-
+function applyData(data: TenderReviewData) {
+  Object.assign(reviewData, data);
+  errorMessage.value = data.extraction_error || '';
+  if (!currentPdfFile.value) {
+    currentPdfFile.value = data.documents.find(d => d.file_name.toLowerCase().endsWith('.pdf'))?.file_name || '';
+  }
+}
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  if (disposed || !isExtracting.value) return;
+  pollTimer = setTimeout(async () => {
+    try {
+      const data = await tenderApi.getReviewData(reviewData.project_id);
+      if (disposed) return;
+      applyData(data);
+    } catch (err) {
+      if (!disposed) errorMessage.value = `${errorText(err)}；正在重试获取进度`;
+    }
+    schedulePoll();
+  }, 2500);
+}
+async function startExtraction(force = false) {
+  if (!reviewData.project_id || isExtracting.value || isLoading.value) return;
+  if (force && reviewData.main_parameters.length) {
+    try {
+      await ElMessageBox.confirm('重新提取将替换当前表格及尚未保存的修改，是否继续？', '重新提取参数');
+    } catch { return; }
+  }
+  isLoading.value = true;
+  errorMessage.value = '';
+  try {
+    const data = await tenderApi.startAgentExtraction(reviewData.project_id, force);
+    if (disposed) return;
+    tenderStore.clearHighlight();
+    applyData(data);
+    schedulePoll();
+  } catch (err) {
+    if (!disposed) errorMessage.value = errorText(err);
+  } finally { isLoading.value = false; }
+}
+onMounted(async () => {
+  if (!reviewData.project_id) {
+    errorMessage.value = '请先上传标书后进入审阅台';
+    return;
+  }
+  isLoading.value = true;
+  try {
+    const data = await tenderApi.getReviewData(reviewData.project_id);
+    if (disposed) return;
+    applyData(data);
+  } catch (err) {
+    errorMessage.value = errorText(err);
+  } finally { isLoading.value = false; }
+  if (disposed) return;
+  if (reviewData.status === 'READY') await startExtraction();
+  else schedulePoll();
+});
+onBeforeUnmount(() => { disposed = true; clearTimeout(pollTimer); });
+function traceSource(source: SourceReference) {
+  if (!source.file_name.toLowerCase().endsWith('.pdf')) {
+    ElMessage.info(`原文位于 ${source.file_name}，当前预览仅支持 PDF`);
+    return;
+  }
+  currentPdfFile.value = source.file_name;
+  tenderStore.triggerTraceHighlight(source);
+}
+function handleMainParamClick(row: MainParameterItem) {
+  if (row.source_ref) traceSource(row.source_ref);
+  else tenderStore.clearHighlight();
+}
 function handleComponentClick(comp: ExtractedComponentItem) {
   activeReqId.value = comp.req_id;
-  currentPdfFile.value = comp.Source_Reference.file_name;
-  tenderStore.triggerTraceHighlight(comp.Source_Reference);
+  traceSource(comp.Source_Reference);
 }
-
 async function handleExportExcel() {
   try {
     await tenderApi.confirmAndExportExcel(reviewData.project_id, reviewData);
-    ElMessage.success('已成功将数据写入《新版初评表》模板并触发下载！');
-  } catch {
-    ElMessage.info('演示模式：已打包修改后的主参数与选定供应商组部件，调用后端 openpyxl 填表接口。');
-  }
+    ElMessage.success('Excel 已生成');
+  } catch (err) { ElMessage.error(`导出失败：${errorText(err)}`); }
 }
-
-onMounted(async () => {
-  if (route.params.projectId) {
-    try {
-      const serverData = await tenderApi.getReviewData(route.params.projectId as string);
-      Object.assign(reviewData, serverData);
-    } catch {
-      // 保持本地演示数据
-    }
-  }
-});
 </script>
 
 <style scoped lang="scss">

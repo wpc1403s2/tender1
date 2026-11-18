@@ -15,8 +15,9 @@ from app.schemas.document_schema import (
 )
 # 在 app/services/parser_service.py 顶部新增导入与目录常量：
 from pathlib import Path
+from app.core.config import BACKEND_ROOT
 
-UPLOAD_ROOT_DIR = Path("data/uploads")
+UPLOAD_ROOT_DIR = BACKEND_ROOT / 'data/uploads'
 UPLOAD_ROOT_DIR.mkdir(parents=True, exist_ok=True)
 # 延迟加载或全局单例初始化 PaddleOCR PP-Structure (避免每次请求重复加载模型)
 try:
@@ -65,7 +66,28 @@ class DocumentParserService:
     @classmethod
     def get_uploaded_file_path(cls, project_id: str, file_name: str) -> Path:
         """获取某项目下已上传原始文件的本地存储路径"""
+        if not project_id or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in project_id):
+            raise ValueError('无效的项目编号')
+        if not file_name or Path(file_name).name != file_name or '/' in file_name or '\\' in file_name:
+            raise ValueError('无效的文件名')
         return UPLOAD_ROOT_DIR / project_id / file_name
+
+    @classmethod
+    async def restore_project(cls, project_id: str) -> Optional[ProjectMemoryStore]:
+        if project_id in cls._memory_store:
+            return cls._memory_store[project_id]
+        project_dir = cls.get_uploaded_file_path(project_id, 'placeholder').parent
+        snapshot = BACKEND_ROOT / 'data/parsed' / f'{project_id}.json'
+        if snapshot.exists():
+            memory = ProjectMemoryStore.model_validate_json(await asyncio.to_thread(snapshot.read_text, encoding='utf-8'))
+            cls._memory_store[project_id] = memory
+            return memory
+        if project_dir.is_dir():
+            files = [(p.name, await asyncio.to_thread(p.read_bytes)) for p in sorted(project_dir.iterdir())
+                     if p.is_file() and p.suffix.lower() in {'.pdf', '.docx', '.xlsx', '.xls'}]
+            if files:
+                return await cls.process_upload_Batch(project_id, files)
+        return None
 
     @classmethod
     async def process_upload_Batch(cls, project_id: str, files_data: List[Tuple[str, bytes]]) -> ProjectMemoryStore:
@@ -73,7 +95,7 @@ class DocumentParserService:
             cls._memory_store[project_id] = ProjectMemoryStore(project_id=project_id)
 
         # 创建当前项目的专属文件存放目录
-        project_dir = UPLOAD_ROOT_DIR / project_id
+        project_dir = cls.get_uploaded_file_path(project_id, 'placeholder').parent
         project_dir.mkdir(parents=True, exist_ok=True)
 
         expanded_files: List[Tuple[str, bytes]] = []
@@ -89,11 +111,11 @@ class DocumentParserService:
                                 raw_bytes = zf.read(member)
                                 expanded_files.append((real_name, raw_bytes))
                                 # 保存解压后的原文件到磁盘
-                                (project_dir / real_name).write_bytes(raw_bytes)
+                                cls.get_uploaded_file_path(project_id, real_name).write_bytes(raw_bytes)
             else:
                 expanded_files.append((filename, file_bytes))
                 # 保存上传的原文件到磁盘
-                (project_dir / filename).write_bytes(file_bytes)
+                cls.get_uploaded_file_path(project_id, filename).write_bytes(file_bytes)
 
         # 2. 并发执行文档解析
         tasks = [
@@ -104,9 +126,17 @@ class DocumentParserService:
 
         # 3. 存入内存上下文
         for doc in parsed_docs:
+            for old_id, old_doc in list(cls._memory_store[project_id].documents.items()):
+                if old_doc.file_name == doc.file_name:
+                    del cls._memory_store[project_id].documents[old_id]
             cls._memory_store[project_id].documents[doc.doc_id] = doc
             logger.info(f"文档 [{doc.file_name}] 已保存并解析完成 | 页数: {doc.total_pages}")
 
+        snapshot = BACKEND_ROOT / 'data/parsed' / f'{project_id}.json'
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        temporary = snapshot.with_suffix('.tmp')
+        temporary.write_text(cls._memory_store[project_id].model_dump_json(), encoding='utf-8')
+        temporary.replace(snapshot)
         return cls._memory_store[project_id]
 
     @classmethod

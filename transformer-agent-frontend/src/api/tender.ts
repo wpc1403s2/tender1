@@ -24,8 +24,8 @@ export const tenderApi = {
   },
 
   // 2. 触发多智能体提取与 RAG 组部件匹配任务
-  async startAgentExtraction(projectId: string) {
-    const { data } = await request.post(`/api/v1/tender/${projectId}/analyze`);
+  async startAgentExtraction(projectId: string, force = false): Promise<TenderReviewData> {
+    const { data } = await request.post(`/api/v1/tender/${projectId}/analyze`, null, { params: { force } });
     return data.data;
   },
 

@@ -44,6 +44,8 @@ pnpm-debug.log*
 
 *.sqlite
 *.sqlite3
+transformer-agent-backend/data/parsed/
+transformer-agent-backend/data/extractions/
 
 # ============================================================
 # IDE 与编辑器
