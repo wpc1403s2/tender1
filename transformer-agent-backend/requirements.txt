@@ -12,6 +12,7 @@ redis>=5.2.0
 # Agent 与大模型交互 (2026年末最新版)
 langchain>=0.3.0
 langchain-core>=0.3.15
+langchain-openai>=0.3.0
 langgraph==1.2.21
 openai==3.51.0
 

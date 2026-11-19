@@ -29,14 +29,8 @@
       <!-- 右侧：结构化提取表单与 RAG 组部件匹配面板 -->
       <section class="right-form-pane">
         <el-tabs v-model="activeTab" type="border-card" class="review-tabs">
-          <el-tab-pane label="1. 变压器主参数与商务要求" name="mainParams">
-            <el-alert
-              title="点击任意参数行，左侧 PDF 将自动翻页并高亮原文提取位置（BBox 溯源）"
-              type="info"
-              show-icon
-              :closable="false"
-              style="margin-bottom: 12px"
-            />
+          <el-tab-pane :label="`1. 变压器主参数与商务要求（提取率 ${extractionStats.rate}%）`" name="mainParams">
+
             <el-table
               :data="reviewData.main_parameters"
               border
@@ -47,7 +41,13 @@
               <el-table-column label="Agent 提取值 (可直接修改)" min-width="180">
                 <template #default="{ row }">
                   <div class="editable-cell">
-                    <el-input v-model="row.param_value" size="small" />
+                    <el-input
+                      v-model="row.param_value"
+                      type="textarea"
+                      :autosize="{ minRows: 1 }"
+                      resize="none"
+                      class="param-value-input"
+                    />
                     <el-tag v-if="row.has_conflict" type="danger" size="small" effect="dark">
                       跨文档冲突
                     </el-tag>
@@ -137,7 +137,7 @@ const route = useRoute();
 const tenderStore = useTenderStore();
 const activeTab = ref('mainParams');
 const activeReqId = ref('');
-const currentPdfFile = ref('680500BEST00025_CDFE00_60 Power transformer general specification.pdf');
+const currentPdfFile = ref('');
 
 // 修改后的 reviewData 初始状态（清空硬编码假数据，等待后端动态加载）
 const reviewData = reactive<TenderReviewData>({
@@ -153,21 +153,29 @@ const reviewData = reactive<TenderReviewData>({
 const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const currentPdfUrl = computed(() => {
-  if (!currentPdfFile.value) return '';
-  const doc = reviewData.documents.find((d) => d.file_name === currentPdfFile.value);
+  if (!currentPdfFile.value || !reviewData.project_id) return '';
 
-  // 1. 优先使用后端返回的真实文件流地址
+  const doc = reviewData.documents.find((d) => d.file_name === currentPdfFile.value);
   if (doc?.file_url) {
     return doc.file_url.startsWith('http') ? doc.file_url : `${baseUrl}${doc.file_url}`;
   }
+  return `${baseUrl}/api/v1/tender/${reviewData.project_id}/files/${encodeURIComponent(currentPdfFile.value)}`;
+});
 
-  // 2. 如果切换到了某行参数引用的文件名，直接按后端流式接口规则拼接 URL
-  if (reviewData.project_id && !reviewData.project_id.startsWith('proj_guillena')) {
-    return `${baseUrl}/api/v1/tender/${reviewData.project_id}/files/${encodeURIComponent(currentPdfFile.value)}`;
-  }
-
-  // 3. 仅在未上传任何文件的纯前端离线演示模式下，才回退到 public/sample.pdf
-  return '/sample.pdf';
+// 参数提取率统计：非"未提及"且非空的条目视为成功提取
+const UNMENTIONED_KEYWORDS = ['未提及', 'not mentioned', 'n/a'];
+const extractionStats = computed(() => {
+  const items = reviewData.main_parameters || [];
+  const total = items.length;
+  const extracted = items.filter(
+    (it) =>
+      it.param_value &&
+      it.param_value.trim() !== '' &&
+      !UNMENTIONED_KEYWORDS.includes(it.param_value.trim().toLowerCase())
+  ).length;
+  const conflicts = items.filter((it) => it.has_conflict).length;
+  const rate = total === 0 ? 0 : Math.round((extracted / total) * 100);
+  return { total, extracted, missed: total - extracted, conflicts, rate };
 });
 
 // 替换 Review.vue 中的 onMounted 钩子，自动选中第一个上传的真实 PDF：
@@ -251,7 +259,11 @@ onMounted(async () => {
     }
   }
 }
-.editable-cell { display: flex; align-items: center; gap: 8px; }
+.editable-cell {
+  display: flex; align-items: flex-start; gap: 8px;
+  .param-value-input { flex: 1; min-width: 0; }
+  :deep(.el-textarea__inner) { font-size: 12px; line-height: 1.5; padding: 4px 8px; }
+}
 .component-card {
   border: 1px solid #e4e7ed; border-radius: 6px; padding: 14px; margin-bottom: 14px;
   background: #fff; cursor: pointer; transition: all 0.2s;

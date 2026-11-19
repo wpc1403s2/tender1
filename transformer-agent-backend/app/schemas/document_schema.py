@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any
 from pydantic import BaseModel, Field
 
 class DocCategory(str, Enum):
@@ -28,7 +28,10 @@ class ParsedDocument(BaseModel):
     blocks: List[ContentBlock] = Field(default_factory=list)
     full_markdown: str = Field(default="", description="拼接后的完整上下文，带有坐标锚点标记")
 
+
 class ProjectMemoryStore(BaseModel):
-    """项目级内存上下文，可直接映射为 LangGraph 的初始 State"""
+    """项目级内存上下文"""
     project_id: str
     documents: Dict[str, ParsedDocument] = Field(default_factory=dict)
+    extracted_main_parameters: List[Dict[str, Any]] = Field(default_factory=list)
+    extracted_components: List[Dict[str, Any]] = Field(default_factory=list)
