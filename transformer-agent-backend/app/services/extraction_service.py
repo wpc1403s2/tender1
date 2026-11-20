@@ -7,6 +7,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.schemas.document_schema import ProjectMemoryStore, ContentBlock
+from app.services.vector_store import VectorStoreService
 
 # 完整对齐《二期字段_2.xlsx》的提取字段清单与梳理提示要求
 PHASE2_FIELDS_SPEC: List[Tuple[str, str]] = [
@@ -271,36 +272,137 @@ class DeepSeekExtractionService:
             all_main_params.extend(res)
 
         memory.extracted_main_parameters = all_main_params
-
-        # 同步将第 4, 7, 12, 13, 14, 15, 16 项组部件提取结果转化为右侧 Tab 2 的组部件卡片
-        component_mapping = [
-            ("4.避雷器", "Surge_Arrester (避雷器)"),
-            ("7.绝缘油", "Transformer_Oil (变压器油)"),
-            ("12.呼吸器", "Smart_Breather (智能呼吸器)"),
-            ("13.油位计", "Oil_Level_Indicator (油位计)"),
-            ("14.气体继电器", "Buchholz_Relay (瓦斯继电器)"),
-            ("15.油面温度计和绕组温度计", "Temperature_Indicator (温度计)"),
-            ("16.压力释放阀", "Pressure_Relief_Valve (压力释放阀)"),
-        ]
-        param_dict = {item["param_key"]: item for item in all_main_params}
-        extracted_comps = []
-
-        for idx, (field_key, comp_cat) in enumerate(component_mapping, start=1):
-            p_item = param_dict.get(field_key)
-            if p_item and p_item["param_value"] != "未提及":
-                extracted_comps.append({
-                    "req_id": f"req_comp_{idx}",
-                    "Component_Category": comp_cat,
-                    "Component_Name": field_key,
-                    "Material_Requirement": "详见标书提取描述",
-                    "Technical_Parameters": {"标书核心要求": p_item["param_value"][:120]},
-                    "Specific_Requirements": [p_item["param_value"]],
-                    "Quantity": "按标书配置",
-                    "Source_Reference": p_item["source_ref"],
-                    "matched_candidates": [],
-                    "selected_comp_id": ""
-                })
-
-        memory.extracted_components = extracted_comps
-        logger.info(f"DeepSeek 标书参数提取完成！共提取主参数 {len(all_main_params)} 项，组部件需求 {len(extracted_comps)} 项。")
+        await cls.build_and_match_components(memory)
+        logger.info(
+            f"DeepSeek 标书参数提取与组部件匹配完成！共提取主参数 {len(all_main_params)} 项，"
+            f"组部件匹配需求 {len(memory.extracted_components)} 项。"
+        )
         return memory
+
+    @classmethod
+    async def build_and_match_components(cls, memory: ProjectMemoryStore) -> List[Dict[str, Any]]:
+        """
+        将提取出的 16 项核心组部件需求转化为结构化卡片，并调用三阶段混合匹配引擎
+        (硬规则过滤 + pgvector 向量召回 + DeepSeek 工程师级选型核验)
+        """
+        all_main_params = memory.extracted_main_parameters or []
+        param_dict = {item["param_key"]: item for item in all_main_params}
+
+        # 提取全局电压等级、IP防护/防腐要求、环境条件作为组部件匹配的全局边界上下文
+        global_context_parts = []
+        for gk in (
+            "1.3 各个电压等级对应的额定电压、绝缘水平、联结组别方式、容量，电压的调压范围",
+            "18.第10条到第17条的IP防护与防腐要求",
+            "26.变压器所处的环境条件",
+        ):
+            g_item = param_dict.get(gk)
+            if g_item and g_item.get("param_value") and g_item["param_value"] != "未提及":
+                global_context_parts.append(f"- {gk}: {g_item['param_value']}")
+        global_context_summary = "\n".join(global_context_parts)
+
+        # 覆盖《二期标准字段》全部 16 大组部件类别映射
+        # (其中有载分接开关聚合 2.1 ~ 2.3.14 的全部非空提取结果)
+        oltc_keys = [
+            "2.1 调压开关型式",
+            "2.2 调压开关的厂家是否有要求",
+            "2.3.1 分接开关额定电压",
+            "2.3.2 分接开关额定电流",
+            "2.3.3 分接开关调压范围与级数",
+            "2.3.4 分接开关过渡阻抗类型与参数",
+            "2.3.5 分接开关绝缘水平",
+            "2.3.6 分接开关机械寿命与电气寿命，免维护的使用次数",
+            "2.3.8 分接开关开关控制柜及驱动机构的要求",
+            "2.3.10 自动电压调整器(AVR)要求",
+            "2.3.12 有载开关的通讯要求",
+        ]
+
+        component_specs = [
+            ("OLTC", "OLTC (有载分接开关)", "2.1~2.3 有载分接开关 (OLTC)", oltc_keys),
+            ("DETC", "DETC (无励磁分接开关)", "2.4 无载/无励磁分接开关 (DETC)", ["2.4 无载开关/无励磁分接开关DETC要求"]),
+            ("Bushing", "Bushing (套管)", "3.套管", ["3.套管"]),
+            ("Surge_Arrester", "Surge_Arrester (避雷器)", "4.避雷器", ["4.避雷器"]),
+            ("Silicon_Steel", "Silicon_Steel (硅钢片)", "5.硅钢片", ["5.硅钢片"]),
+            ("Winding_Wire", "Winding_Wire (绕组电磁线)", "6.变压器绕组线圈电磁线", ["6.变压器绕组线圈电磁线"]),
+            ("Transformer_Oil", "Transformer_Oil (绝缘油)", "7.绝缘油", ["7.绝缘油"]),
+            ("Cooling_System", "Cooling_System (冷却系统)", "8.变压器冷却系统", ["8.变压器冷却系统"]),
+            ("BCT", "BCT (套管电流互感器)", "9.电流互感器", ["9.电流互感器"]),
+            ("Smart_Breather", "Smart_Breather (呼吸器)", "12.呼吸器", ["12.呼吸器"]),
+            ("Oil_Level_Indicator", "Oil_Level_Indicator (油位计)", "13.油位计", ["13.油位计"]),
+            ("Buchholz_Relay", "Buchholz_Relay (气体继电器)", "14.气体继电器", ["14.气体继电器"]),
+            ("Temperature_Indicator", "Temperature_Indicator (油面/绕组温控器)", "15.油面温度计和绕组温度计", ["15.油面温度计和绕组温度计"]),
+            ("Pressure_Relief_Valve", "Pressure_Relief_Valve (压力释放阀)", "16.压力释放阀", ["16.压力释放阀"]),
+            ("Sudden_Pressure_Relay", "Sudden_Pressure_Relay (压力突发继电器)", "17.压力突发继电器", ["17.压力突发继电器"]),
+            ("Valve", "Valve (变压器阀门)", "19.变压器中阀门", ["19.变压器中阀门"]),
+        ]
+
+        extracted_comps: List[Dict[str, Any]] = []
+        ip_corrosion_val = param_dict.get("18.第10条到第17条的IP防护与防腐要求", {}).get("param_value", "")
+
+        for idx, (cat_code, cat_display, comp_title, field_keys) in enumerate(component_specs, start=1):
+            req_lines = []
+            primary_source_ref = None
+            has_conflict = False
+            tech_params: Dict[str, str] = {}
+
+            for fk in field_keys:
+                p_item = param_dict.get(fk)
+                if not p_item:
+                    continue
+                val = (p_item.get("param_value") or "").strip()
+                if not val or val in ("未提及", "无"):
+                    continue
+                # 若是 2.4 无励磁开关，但标书实际是有载开关，跳过不生成 DETC 卡片
+                if cat_code == "DETC" and ("有载" in val and "无" not in val):
+                    continue
+
+                if len(field_keys) > 1:
+                    short_label = fk.split(" ")[-1]
+                    req_lines.append(f"【{short_label}】{val}")
+                    tech_params[short_label] = val[:80]
+                else:
+                    # 将分号或换行分隔的要求拆解为条目列表
+                    parts = [s.strip() for s in val.replace("\n", "；").split("；") if s.strip()]
+                    req_lines.extend(parts if parts else [val])
+                    tech_params["标书技术要求"] = val[:110]
+
+                if p_item.get("has_conflict"):
+                    has_conflict = True
+                if primary_source_ref is None and p_item.get("source_ref"):
+                    primary_source_ref = p_item["source_ref"]
+
+            if not req_lines:
+                continue
+
+            if ip_corrosion_val and ip_corrosion_val != "未提及" and cat_code in (
+                "Cooling_System", "Smart_Breather", "Oil_Level_Indicator",
+                "Buchholz_Relay", "Temperature_Indicator", "Pressure_Relief_Valve", "Sudden_Pressure_Relay"
+            ):
+                tech_params["防护与防腐(第18条)"] = ip_corrosion_val[:60]
+
+            extracted_comps.append({
+                "req_id": f"req_comp_{idx}",
+                "Category_Code": cat_code,
+                "Component_Category": cat_display,
+                "Component_Name": comp_title,
+                "Material_Requirement": param_dict.get(field_keys[0], {}).get("original_text", "")[:100] or "按标书规范要求",
+                "Technical_Parameters": tech_params,
+                "Specific_Requirements": req_lines,
+                "Quantity": "按标书单台套配置",
+                "has_conflict": has_conflict,
+                "Source_Reference": primary_source_ref or {
+                    "file_name": "",
+                    "page_number": 1,
+                    "bbox": None,
+                    "original_text": ""
+                },
+                "matched_candidates": [],
+                "selected_comp_id": ""
+            })
+
+        # 调用三阶段混合匹配引擎
+        await VectorStoreService.match_all_project_components(
+            extracted_components=extracted_comps,
+            global_context_summary=global_context_summary
+        )
+        memory.extracted_components = extracted_comps
+        return extracted_comps

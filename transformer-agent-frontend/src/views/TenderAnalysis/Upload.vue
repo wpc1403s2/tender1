@@ -3,8 +3,15 @@
     <el-card class="upload-card">
       <template #header>
         <div class="card-header">
-          <h2>步骤一：变压器标书多源文档上传与预处理</h2>
-          <el-tag type="primary">支持 PDF(原生/盖章扫描件) · Word · Excel · ZIP整包</el-tag>
+          <div>
+            <h2>步骤一：变压器标书多源文档上传与预处理</h2>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px">
+            <el-tag type="primary">支持 PDF(原生/盖章扫描件) · Word · Excel · ZIP整包</el-tag>
+            <el-button type="warning" plain size="small" @click="router.push('/library')">
+              组部件标准品知识库管理 (pgvector) →
+            </el-button>
+          </div>
         </div>
       </template>
 

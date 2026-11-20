@@ -1,4 +1,6 @@
-export interface ScreenRect {
+import type { CSSProperties } from 'vue';
+
+export interface ScreenRect extends CSSProperties {
   left: string;
   top: string;
   width: string;

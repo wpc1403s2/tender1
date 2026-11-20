@@ -165,6 +165,7 @@ async function renderPage(pageNum: number) {
 function changePage(delta: number) {
   const target = currentPage.value + delta;
   if (target >= 1 && target <= totalPages.value) {
+    tenderStore.clearHighlight();
     currentPage.value = target;
     tenderStore.activePage = target;
     renderPage(target);

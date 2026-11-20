@@ -8,6 +8,7 @@ export interface SourceReference {
   page_number: number;
   bbox: [number, number, number, number] | null; // [x0, y0, x1, y1] (PyMuPDF 72 DPI 坐标)
   original_text?: string;
+  file_url?: string; // 支持供应商样册 PDF 二进制流地址
 }
 
 // 预处理后的文档摘要
@@ -25,14 +26,20 @@ export interface MatchedCandidate {
   comp_id: string;
   manufacturer: string;     // 如: Siemens, EMB, Qualitrol, KunLun
   model_series: string;     // 如: 3EL2, YSF8-55/80, AKM345, KI 45X
-  similarity_score: number; // 语义相似度得分 (0~1)
+  similarity_score: number; // 语义匹配度得分 (0~1)
+  rule_passed?: boolean;
+  match_status?: 'FULLY_MATCHED' | 'QUALIFIED' | 'PARTIAL_DEVIATION';
+  match_highlights?: string[];
+  deviation_notes?: string[];
   specs_summary: Record<string, any>;
+  key_metrics?: Record<string, any>;
   catalog_bbox?: SourceReference; // 供应商样册的溯源坐标
 }
 
 // 提取出的组部件需求及匹配结果
 export interface ExtractedComponentItem {
   req_id: string;
+  Category_Code?: string;
   Component_Category: string;
   Component_Name: string;
   Material_Requirement: string;

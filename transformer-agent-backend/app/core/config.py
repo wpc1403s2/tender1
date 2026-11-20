@@ -5,9 +5,18 @@ from langchain_openai import ChatOpenAI
 dotenv.load_dotenv()
 
 class Settings(BaseSettings):
-    DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY")
-    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL")
-    DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL")
+    DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
+    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "postgresql://admin:adminpassword@localhost:5432/transformer_db"
+    )
+    EMBEDDING_MODEL_NAME: str = os.getenv(
+        "EMBEDDING_MODEL_NAME",
+        "BAAI/bge-small-zh-v1.5"
+    )
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "512"))
 
     model_config = SettingsConfigDict(
         env_file=".env",

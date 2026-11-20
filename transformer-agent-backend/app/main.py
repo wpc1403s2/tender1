@@ -2,8 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-# 导入步骤一编写的标书预处理路由
+# 导入标书预处理路由与组部件库路由
 from app.api.v1.tender import router as tender_router
+from app.api.v1.component import router as component_router
 
 # 必须实例化名为 app 的 FastAPI 对象，Uvicorn 才能识别 app.main:app
 app = FastAPI(
@@ -23,6 +24,7 @@ app.add_middleware(
 
 # 注册 API 路由
 app.include_router(tender_router)
+app.include_router(component_router)
 
 @app.get("/", tags=["Health Check"])
 async def root():

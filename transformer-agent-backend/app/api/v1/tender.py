@@ -76,6 +76,11 @@ async def get_project_review_data(project_id: str, force_refresh: bool = False):
             await DeepSeekExtractionService.run_full_extraction(memory)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"DeepSeek 参数提取失败: {str(e)}")
+    elif not memory.extracted_components or any(
+        not c.get("matched_candidates") for c in memory.extracted_components
+    ):
+        # 如果已有主参数但组部件尚未匹配，自动执行三阶段组部件匹配
+        await DeepSeekExtractionService.build_and_match_components(memory)
 
     documents = [
         {
@@ -98,5 +103,25 @@ async def get_project_review_data(project_id: str, force_refresh: bool = False):
             "documents": documents,
             "main_parameters": memory.extracted_main_parameters,
             "components": memory.extracted_components
+        }
+    }
+
+
+@router.post("/{project_id}/rematch", summary="根据最新主参数与组部件标准库重新执行三阶段智能匹配")
+async def rematch_project_components(project_id: str, payload: dict = None):
+    memory = DocumentParserService.get_project_memory(project_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="未找到该项目内存数据，请先上传标书")
+
+    # 如果前端提交了人工修订后的 main_parameters，先更新到内存中再重跑匹配
+    if payload and isinstance(payload.get("main_parameters"), list) and payload["main_parameters"]:
+        memory.extracted_main_parameters = payload["main_parameters"]
+
+    matched_components = await DeepSeekExtractionService.build_and_match_components(memory)
+    return {
+        "code": 200,
+        "message": f"已完成 {len(matched_components)} 类组部件的三阶段混合匹配",
+        "data": {
+            "components": matched_components
         }
     }

@@ -30,11 +30,24 @@ export const tenderApi = {
   },
 
   // 3. 获取项目的提取与组部件匹配完整结果
-  async getReviewData(projectId: string): Promise<TenderReviewData> {
+  async getReviewData(projectId: string, forceRefresh: boolean = false): Promise<TenderReviewData> {
     const { data } = await request.get<{ code: number; data: TenderReviewData }>(
-      `/api/v1/tender/${projectId}/review`
+      `/api/v1/tender/${projectId}/review`,
+      { params: { force_refresh: forceRefresh } }
     );
     return data.data;
+  },
+
+  // 3.5 根据最新主参数与组部件库重新执行三阶段智能匹配
+  async rematchComponents(projectId: string, mainParameters?: any[]) {
+    const { data } = await request.post<{
+      code: number;
+      message: string;
+      data: { components: any[] };
+    }>(`/api/v1/tender/${projectId}/rematch`, {
+      main_parameters: mainParameters,
+    });
+    return data;
   },
 
   // 4. 保存人工修订后的数据并导出《新版初评表》Excel
